@@ -251,7 +251,6 @@ def maybe_update_events() -> None:
 
 @app.route("/")
 def index():
-    maybe_update_events()
     events = load_events()
 
     keywords = request.args.get("keywords", "").strip()
