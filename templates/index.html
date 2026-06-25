@@ -1,0 +1,211 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>NRC Event Search</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1100px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #f4f6f8;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .search-box {
+            background: white;
+            padding: 18px;
+            border-radius: 12px;
+            box-shadow: 0 1px 6px rgba(0,0,0,.08);
+            margin-bottom: 24px;
+        }
+
+        form {
+            display: grid;
+            grid-template-columns: 2fr 2fr 1fr 1fr auto;
+            gap: 12px;
+            align-items: end;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 6px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="date"] {
+            width: 100%;
+            padding: 10px;
+            font-size: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-sizing: border-box;
+        }
+
+        button {
+            padding: 11px 18px;
+            font-size: 15px;
+            border: none;
+            border-radius: 8px;
+            background: #1f6feb;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1559c1;
+        }
+
+        .meta {
+            margin-bottom: 16px;
+            color: #444;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 6px rgba(0,0,0,.08);
+        }
+
+        .event-link {
+            font-size: 20px;
+            font-weight: bold;
+            text-decoration: none;
+            color: #1f6feb;
+        }
+
+        .event-link:hover {
+            text-decoration: underline;
+        }
+
+        .title {
+            margin-top: 6px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .muted {
+            margin-top: 6px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .snippet {
+            margin-top: 10px;
+            color: #333;
+            line-height: 1.5;
+            font-size: 14px;
+        }
+
+        .empty {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            color: #555;
+            box-shadow: 0 1px 6px rgba(0,0,0,.08);
+        }
+
+        @media (max-width: 950px) {
+            form {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>NRC Event Search</h1>
+
+    <div class="search-box">
+        <form method="get" action="/">
+            <div>
+                <label for="keywords">Keywords</label>
+                <input
+                    id="keywords"
+                    type="text"
+                    name="keywords"
+                    placeholder="ex: leak"
+                    value="{{ keywords }}"
+                >
+            </div>
+
+            <div>
+                <label for="exclude_keywords">Exclude keywords (optional)</label>
+                <input
+                    id="exclude_keywords"
+                    type="text"
+                    name="exclude_keywords"
+                    placeholder="ex: medical"
+                    value="{{ exclude_keywords }}"
+                >
+            </div>
+
+            <div>
+                <label for="start_date">Start date (optional)</label>
+                <input
+                    id="start_date"
+                    type="date"
+                    name="start_date"
+                    value="{{ start_date }}"
+                >
+            </div>
+
+            <div>
+                <label for="end_date">End date (optional)</label>
+                <input
+                    id="end_date"
+                    type="date"
+                    name="end_date"
+                    value="{{ end_date }}"
+                >
+            </div>
+
+            <div>
+                <button type="submit">Search</button>
+            </div>
+        </form>
+    </div>
+
+    {% if keywords or exclude_keywords or start_date or end_date %}
+        <div class="meta">
+            Found <strong>{{ results|length }}</strong> matching event(s)
+        </div>
+
+        {% if results %}
+            {% for event in results %}
+                <div class="card">
+                    <a
+                        class="event-link"
+                        href="/event/{{ event.event_number }}?keywords={{ keywords|urlencode }}&exclude_keywords={{ exclude_keywords|urlencode }}&start_date={{ start_date|urlencode }}&end_date={{ end_date|urlencode }}"
+                    >
+                        Event {{ event.event_number }}
+                    </a>
+
+                    <div class="title">{{ event.display_title }}</div>
+
+                    <div class="muted">
+                        {{ event.facility }} | {{ event.state }} | {{ event.report_date }}
+                    </div>
+
+                    <div class="snippet">{{ event.snippet }}</div>
+                </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">
+                No matching events found.
+            </div>
+        {% endif %}
+    {% else %}
+        <div class="empty">
+            Enter keywords, optional excluded keywords, and optionally a start and/or end date.
+        </div>
+    {% endif %}
+</body>
+</html>
