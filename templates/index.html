@@ -1,211 +1,58 @@
-<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>NRC Event Search</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 1100px;
-            margin: 40px auto;
-            padding: 0 20px;
-            background: #f4f6f8;
-        }
-
-        h1 {
-            margin-bottom: 20px;
-        }
-
-        .search-box {
-            background: white;
-            padding: 18px;
-            border-radius: 12px;
-            box-shadow: 0 1px 6px rgba(0,0,0,.08);
-            margin-bottom: 24px;
-        }
-
-        form {
-            display: grid;
-            grid-template-columns: 2fr 2fr 1fr 1fr auto;
-            gap: 12px;
-            align-items: end;
-        }
-
-        label {
-            display: block;
-            font-size: 14px;
-            margin-bottom: 6px;
-            font-weight: bold;
-        }
-
-        input[type="text"],
-        input[type="date"] {
-            width: 100%;
-            padding: 10px;
-            font-size: 15px;
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            box-sizing: border-box;
-        }
-
-        button {
-            padding: 11px 18px;
-            font-size: 15px;
-            border: none;
-            border-radius: 8px;
-            background: #1f6feb;
-            color: white;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background: #1559c1;
-        }
-
-        .meta {
-            margin-bottom: 16px;
-            color: #444;
-        }
-
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 14px;
-            box-shadow: 0 1px 6px rgba(0,0,0,.08);
-        }
-
-        .event-link {
-            font-size: 20px;
-            font-weight: bold;
-            text-decoration: none;
-            color: #1f6feb;
-        }
-
-        .event-link:hover {
-            text-decoration: underline;
-        }
-
-        .title {
-            margin-top: 6px;
-            font-size: 16px;
-            font-weight: 600;
-        }
-
-        .muted {
-            margin-top: 6px;
-            color: #666;
-            font-size: 14px;
-        }
-
-        .snippet {
-            margin-top: 10px;
-            color: #333;
-            line-height: 1.5;
-            font-size: 14px;
-        }
-
-        .empty {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            color: #555;
-            box-shadow: 0 1px 6px rgba(0,0,0,.08);
-        }
-
-        @media (max-width: 950px) {
-            form {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
-</head>
-<body>
-    <h1>NRC Event Search</h1>
-
-    <div class="search-box">
-        <form method="get" action="/">
-            <div>
-                <label for="keywords">Keywords</label>
-                <input
-                    id="keywords"
-                    type="text"
-                    name="keywords"
-                    placeholder="ex: leak"
-                    value="{{ keywords }}"
-                >
-            </div>
-
-            <div>
-                <label for="exclude_keywords">Exclude keywords (optional)</label>
-                <input
-                    id="exclude_keywords"
-                    type="text"
-                    name="exclude_keywords"
-                    placeholder="ex: medical"
-                    value="{{ exclude_keywords }}"
-                >
-            </div>
-
-            <div>
-                <label for="start_date">Start date (optional)</label>
-                <input
-                    id="start_date"
-                    type="date"
-                    name="start_date"
-                    value="{{ start_date }}"
-                >
-            </div>
-
-            <div>
-                <label for="end_date">End date (optional)</label>
-                <input
-                    id="end_date"
-                    type="date"
-                    name="end_date"
-                    value="{{ end_date }}"
-                >
-            </div>
-
-            <div>
-                <button type="submit">Search</button>
-            </div>
-        </form>
-    </div>
-
-    {% if keywords or exclude_keywords or start_date or end_date %}
-        <div class="meta">
-            Found <strong>{{ results|length }}</strong> matching event(s)
-        </div>
-
-        {% if results %}
-            {% for event in results %}
-                <div class="card">
-                    <a
-                        class="event-link"
-                        href="/event/{{ event.event_number }}?keywords={{ keywords|urlencode }}&exclude_keywords={{ exclude_keywords|urlencode }}&start_date={{ start_date|urlencode }}&end_date={{ end_date|urlencode }}"
-                    >
-                        Event {{ event.event_number }}
-                    </a>
-
-                    <div class="title">{{ event.display_title }}</div>
-
-                    <div class="muted">
-                        {{ event.facility }} | {{ event.state }} | {{ event.report_date }}
-                    </div>
-
-                    <div class="snippet">{{ event.snippet }}</div>
-                </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">
-                No matching events found.
-            </div>
-        {% endif %}
-    {% else %}
-        <div class="empty">
-            Enter keywords, optional excluded keywords, and optionally a start and/or end date.
-        </div>
-    {% endif %}
-</body>
-</html>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NRC Event Research</title><style>
+body{font-family:Arial,sans-serif;max-width:1200px;margin:35px auto;padding:0 20px;background:#f4f6f8;color:#18202a}.box,.card,.analysis{background:#fff;padding:18px;border-radius:12px;box-shadow:0 1px 6px #0001;margin-bottom:18px}.modes,.filters{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:15px}.grid{display:grid;grid-template-columns:2fr 1.4fr 1fr 1fr auto;gap:10px;align-items:end}label{font-weight:bold;font-size:13px;display:block;margin-bottom:5px}input[type=text],input[type=date]{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:8px}button,.button{padding:11px 16px;border:0;border-radius:8px;background:#1f6feb;color:white;text-decoration:none;cursor:pointer}.filter{background:#e7edf5;color:#18202a}.filter.active{background:#1f6feb;color:white}.muted{color:#667;font-size:13px}.event{font-size:19px;font-weight:bold;color:#1f6feb}.snippet{margin-top:9px;line-height:1.45}.badge{display:inline-block;background:#eef3f8;border-radius:12px;padding:4px 8px;margin:3px;font-size:12px}.accepted{background:#e8f7ec}.rejected{background:#f7eeee}.stats{display:flex;gap:12px;flex-wrap:wrap}.stat{background:#f4f6f8;padding:10px 14px;border-radius:9px}.report{white-space:pre-wrap;line-height:1.55}.error{background:#ffecec;color:#8b1111;padding:12px;border-radius:8px;margin-bottom:15px}.warning{background:#fff5d8;color:#674d00;padding:12px;border-radius:8px;margin-bottom:15px}.loading{display:none;margin-top:18px}.progress-panel{border:1px solid #d9e2ec;background:linear-gradient(135deg,#f8fbff,#f4f7fb);border-radius:14px;padding:18px}.progress-top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.progress-title{font-size:17px;font-weight:700}.progress-message{color:#52606d;margin-top:4px}.progress-percent{font-size:25px;font-weight:700;color:#1f6feb}.progress-track{height:10px;background:#dfe7ef;border-radius:999px;overflow:hidden;margin:15px 0 12px}.progress-bar{height:100%;width:0;background:linear-gradient(90deg,#1f6feb,#55a1ff);border-radius:999px;transition:width .35s ease}.progress-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.progress-metric{background:#fff;border:1px solid #e4eaf0;border-radius:9px;padding:9px 10px}.progress-metric b{display:block;font-size:16px}.progress-metric span{font-size:11px;color:#6b7785;text-transform:uppercase;letter-spacing:.04em}.spinner{display:inline-block;width:10px;height:10px;border:2px solid #a9c8f5;border-top-color:#1f6feb;border-radius:50%;animation:spin .8s linear infinite;margin-right:7px}@keyframes spin{to{transform:rotate(360deg)}}.evidence{border-left:3px solid #ccd6e0;padding-left:10px;margin-top:8px}.decision{font-weight:bold}.card[data-relevant="1"] .decision{color:#176b32}.card[data-relevant="0"] .decision{color:#8b3030}@media(max-width:900px){.grid{grid-template-columns:1fr}}
+</style></head><body><h1>NRC Event Research</h1><p class="muted">Last database update: {{last_updated}}</p>
+<div class="box"><form method="get" id="searchForm"><div class="modes"><label><input type="radio" name="mode" value="keyword" {% if mode!='ai' %}checked{% endif %}> Keyword Search</label><label><input type="radio" name="mode" value="ai" {% if mode=='ai' %}checked{% endif %}> AI Search</label></div><div class="modes" id="depthOptions"><label>Search depth:</label><label><input type="radio" name="depth" value="standard" {% if search_depth!='comprehensive' %}checked{% endif %}> Standard</label><label><input type="radio" name="depth" value="comprehensive" {% if search_depth=='comprehensive' %}checked{% endif %}> Comprehensive</label><span class="muted">Standard: 100 candidates / 80 classified. Comprehensive: 1,000 candidates / all classified.</span></div><div class="grid"><div><label>Search / research question</label><input type="text" name="keywords" value="{{keywords}}" placeholder="e.g. reactor coolant pump failures"></div><div><label>Exclude keywords (keyword mode)</label><input type="text" name="exclude_keywords" value="{{exclude_keywords}}"></div><div><label>Start date</label><input type="date" name="start_date" value="{{start_date}}"></div><div><label>End date</label><input type="date" name="end_date" value="{{end_date}}"></div><button id="searchButton">Search</button></div><div class="loading" id="loading"><div class="progress-panel"><div class="progress-top"><div><div class="progress-title"><span class="spinner" id="progressSpinner"></span><span id="progressTitle">AI Search in progress</span></div><div class="progress-message" id="progressMessage">Starting search…</div></div><div class="progress-percent" id="progressPercent">0%</div></div><div class="progress-track"><div class="progress-bar" id="progressBar"></div></div><div class="progress-grid"><div class="progress-metric"><b id="progressCandidates">—</b><span>Candidates</span></div><div class="progress-metric"><b id="progressCompleted">0</b><span>Classified</span></div><div class="progress-metric"><b id="progressRelevant">0</b><span>Relevant so far</span></div><div class="progress-metric"><b id="progressElapsed">0s</b><span>Elapsed</span></div></div></div></div></form>{% if not ai_enabled %}<p class="muted">AI search is available after OPENAI_API_KEY is configured and embeddings are built.</p>{% endif %}</div>
+{% if error %}<div class="error">{{error}}</div>{% endif %}{% if warning %}<div class="warning"><b>Classification warning:</b> {{warning}}</div>{% endif %}
+{% if ai_stats %}<div class="analysis"><h2>Research-set statistics</h2><div class="stats"><div class="stat"><b>{{semantic_count}}</b><br>semantic candidates</div><div class="stat"><b>{{ai_stats.total_candidates}}</b><br>classified candidates</div><div class="stat"><b>{{ai_stats.total_relevant}}</b><br>accepted as relevant</div><div class="stat"><b>{{ai_stats.excluded}}</b><br>excluded by AI</div><div class="stat"><b>{{ai_stats.reactor_trips}}</b><br>reactor trips</div><div class="stat"><b>{{ai_stats.power_reductions}}</b><br>power reductions</div><div class="stat"><b>{{ai_stats.safety_actuations}}</b><br>safety actuations</div></div><p class="muted">The {{search_depth}} AI search retrieved {{semantic_count}} candidates and the classifier evaluated up to {{classify_limit}} of them. Counts describe this retrieved/classified NRC event set; they are not component failure probabilities or rates.</p><h3>Failure modes among accepted events</h3>{% for name,n in ai_stats.failure_modes %}<span class="badge">{{name}}: {{n}}</span>{% endfor %}<h3>Causes among accepted events</h3>{% for name,n in ai_stats.causes[:12] %}<span class="badge">{{name}}: {{n}}</span>{% endfor %}{% if not report %}<p><a class="button" href="?mode=ai&depth={{search_depth}}&keywords={{keywords|urlencode}}&start_date={{start_date}}&end_date={{end_date}}&report=1">Generate Research Analysis</a></p>{% endif %}</div>{% endif %}
+{% if report %}<div class="analysis"><h2>AI Research Analysis</h2><div class="report">{{report}}</div></div>{% endif %}
+{% if mode=='ai' and ai_stats %}<div class="filters"><button class="filter active" data-filter="relevant">Relevant ({{ai_stats.total_relevant}})</button><button class="filter" data-filter="excluded">Excluded by AI ({{ai_stats.excluded}})</button><button class="filter" data-filter="all">All classified ({{ai_stats.total_candidates}})</button></div><h2 id="resultHeading">{{ai_stats.total_relevant}} relevant event(s)</h2>{% elif keywords or start_date or end_date %}<h2>{{results|length}} displayed event(s)</h2>{% endif %}
+{% for e in results %}<div class="card" {% if mode=='ai' %}data-relevant="{{1 if e.relevant else 0}}"{% endif %} {% if mode=='ai' and not e.relevant %}style="display:none"{% endif %}><a class="event" href="/event/{{e.event_number}}">Event {{e.event_number}}</a><div><b>{{e.display_title}}</b></div><div class="muted">{{e.facility}} | {{e.state}} | {{e.report_date}}</div>{% if mode=='ai' %}<div class="decision">{{'Accepted as relevant' if e.relevant else 'Excluded by AI'}}{% if e.confidence is defined %} · confidence {{'%.0f%%'|format(e.confidence * 100)}}{% endif %}</div><div>{% if e.component %}<span class="badge">{{e.component}}</span>{% endif %}{% if e.failure_mode %}<span class="badge">{{e.failure_mode}}</span>{% endif %}</div>{% if e.rationale %}<div class="snippet"><b>Reason:</b> {{e.rationale}}</div>{% endif %}{% if e.evidence %}<div class="evidence"><b>Evidence:</b> {{e.evidence}}</div>{% endif %}{% endif %}<div class="snippet">{{e.snippet}}</div></div>{% endfor %}
+<script>
+const form=document.getElementById('searchForm');
+const loading=document.getElementById('loading');
+const searchButton=document.getElementById('searchButton');
+function setProgress(job){
+  const pct=Math.max(0,Math.min(100,Number(job.percent||0)));
+  document.getElementById('progressBar').style.width=pct+'%';
+  document.getElementById('progressPercent').textContent=Math.round(pct)+'%';
+  document.getElementById('progressMessage').textContent=job.message||'Working…';
+  document.getElementById('progressCandidates').textContent=(job.candidates||'—').toLocaleString?.() || job.candidates || '—';
+  document.getElementById('progressCompleted').textContent=Number(job.completed||0).toLocaleString();
+  document.getElementById('progressRelevant').textContent=Number(job.relevant||0).toLocaleString();
+  document.getElementById('progressElapsed').textContent=(job.elapsed||0)+'s';
+}
+async function pollJob(id){
+  while(true){
+    await new Promise(r=>setTimeout(r,800));
+    const response=await fetch('/api/ai-search/status/'+encodeURIComponent(id),{cache:'no-store'});
+    const job=await response.json();
+    if(!response.ok) throw new Error(job.error||'Could not read search progress.');
+    setProgress(job);
+    if(job.state==='done'){
+      document.getElementById('progressTitle').textContent='Search complete';
+      document.getElementById('progressSpinner').style.display='none';
+      await new Promise(r=>setTimeout(r,450));
+      const params=new URLSearchParams(new FormData(form));
+      window.location.href='/?'+params.toString(); return;
+    }
+    if(job.state==='error') throw new Error(job.error||job.message||'AI search failed.');
+  }
+}
+if(form){form.addEventListener('submit',async e=>{
+  const mode=document.querySelector('input[name="mode"]:checked');
+  if(!mode||mode.value!=='ai') return;
+  e.preventDefault(); loading.style.display='block'; searchButton.disabled=true; searchButton.textContent='Searching…';
+  setProgress({percent:1,message:'Starting AI search…',completed:0,relevant:0,elapsed:0});
+  try{
+    const payload=Object.fromEntries(new FormData(form).entries());
+    const response=await fetch('/api/ai-search/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await response.json(); if(!response.ok) throw new Error(data.error||'Could not start AI search.');
+    await pollJob(data.job_id);
+  }catch(err){
+    document.getElementById('progressTitle').textContent='Search stopped'; document.getElementById('progressSpinner').style.display='none';
+    document.getElementById('progressMessage').textContent=err.message; searchButton.disabled=false; searchButton.textContent='Search';
+  }
+})}
+const buttons=document.querySelectorAll('.filter'); const cards=document.querySelectorAll('.card[data-relevant]'); const heading=document.getElementById('resultHeading');
+buttons.forEach(btn=>btn.addEventListener('click',()=>{const f=btn.dataset.filter;buttons.forEach(b=>b.classList.remove('active'));btn.classList.add('active');let shown=0;cards.forEach(c=>{const rel=c.dataset.relevant==='1';const show=f==='all'||(f==='relevant'&&rel)||(f==='excluded'&&!rel);c.style.display=show?'block':'none';if(show)shown++;});if(heading)heading.textContent=shown+' '+(f==='relevant'?'relevant':f==='excluded'?'excluded':'classified')+' event(s)';}));
+</script></body></html>

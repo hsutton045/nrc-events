@@ -1,325 +1,112 @@
 from __future__ import annotations
-
-import html
-import json
-import os
-import re
-import subprocess
-from datetime import datetime, timedelta
-from pathlib import Path
-
-from flask import Flask, abort, render_template, request
-
-DATA_FILE = Path("data/events.json")
-LAST_UPDATED_FILE = Path("data/last_updated.txt")
-BUILD_SCRIPT = Path("build_events.py")
-UPDATE_LOCK_FILE = Path("data/update.lock")
-UPDATE_INTERVAL = timedelta(days=1)
+import os, re, time, threading, uuid
+from flask import Flask, abort, jsonify, render_template, request
+from database import init_db, get_event, database_last_updated, search_keyword
+from ai_search import semantic_candidates, classify, stats, generate_report
 
 app = Flask(__name__)
+init_db()
+
+_jobs = {}
+_jobs_lock = threading.Lock()
 
 
-def load_events() -> list[dict]:
-    if not DATA_FILE.exists():
-        return []
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def snippet(text, query='', radius=180):
+    flat = re.sub(r'\s+', ' ', text or '').strip()
+    terms = query.split(); pos = -1; term = ''
+    for term in terms:
+        pos = flat.lower().find(term.lower())
+        if pos >= 0: break
+    if pos < 0: return flat[:radius*2] + ('...' if len(flat) > radius*2 else '')
+    a=max(0,pos-radius); b=min(len(flat),pos+len(term)+radius)
+    return ('...' if a else '') + flat[a:b] + ('...' if b < len(flat) else '')
 
 
-def parse_report_date(date_str: str):
-    if not date_str:
-        return None
-
-    for fmt in (
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%m/%d/%Y",
-        "%m-%d-%Y",
-        "%Y-%m-%d",
-    ):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).date()
-        except ValueError:
-            continue
-    return None
+def decorate(event, query=''):
+    event=dict(event); event['display_title']=event.get('title') or 'Event'; event['snippet']=snippet(event.get('event_text',''),query)
+    return event
 
 
-def parse_html_date(date_str: str):
-    if not date_str:
-        return None
+def limits(depth):
+    return (1000, 1000) if depth == 'comprehensive' else (100, 80)
+
+
+def update_job(job_id, **changes):
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(changes)
+            _jobs[job_id]['elapsed'] = round(time.time() - _jobs[job_id]['started_at'], 1)
+
+
+def run_ai_job(job_id, query, start, end, depth):
+    candidate_limit, classify_limit = limits(depth)
+    def progress(**changes): update_job(job_id, **changes)
     try:
-        return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
-    except ValueError:
-        return None
+        candidates = semantic_candidates(query, start, end, candidate_limit, progress=progress)
+        classified, status = classify(query, candidates, classify_limit, return_status=True, progress=progress)
+        relevant = sum(bool(x.get('relevant')) for x in classified)
+        update_job(job_id, state='done', stage='done', message='Search complete', percent=100,
+                   candidates=len(candidates), completed=len(classified), relevant=relevant,
+                   failed=status.get('failed', 0))
+    except Exception as exc:
+        update_job(job_id, state='error', stage='error', message=str(exc), error=str(exc))
 
 
-def parse_terms(text: str) -> list[str]:
-    return [term.strip().lower() for term in text.split() if term.strip()]
+@app.post('/api/ai-search/start')
+def start_ai_search():
+    data=request.get_json(silent=True) or request.form
+    q=str(data.get('keywords','')).strip()
+    if not q: return jsonify({'error':'AI Search requires a research question.'}),400
+    depth=str(data.get('depth','standard'))
+    if depth not in ('standard','comprehensive'): depth='standard'
+    job_id=uuid.uuid4().hex
+    candidate_limit, classify_limit=limits(depth)
+    with _jobs_lock:
+        _jobs[job_id]={'state':'running','stage':'starting','message':'Starting AI search…','percent':1,
+            'query':q,'depth':depth,'candidates':0,'requested':classify_limit,'completed':0,'relevant':0,
+            'cache_hits':0,'failed':0,'started_at':time.time(),'elapsed':0}
+    threading.Thread(target=run_ai_job,args=(job_id,q,data.get('start_date') or None,data.get('end_date') or None,depth),daemon=True).start()
+    return jsonify({'job_id':job_id})
 
 
-def build_search_text(event: dict) -> str:
-    return " ".join([
-        str(event.get("event_number", "")),
-        str(event.get("facility", "")),
-        str(event.get("state", "")),
-        str(event.get("title", "")),
-        str(event.get("event_text", "")),
-    ]).lower()
+@app.get('/api/ai-search/status/<job_id>')
+def ai_search_status(job_id):
+    with _jobs_lock: job=dict(_jobs.get(job_id,{}))
+    if not job: return jsonify({'error':'Search job not found.'}),404
+    job.pop('started_at',None)
+    return jsonify(job)
 
 
-def build_report_url(event: dict) -> str:
-    event_date = parse_report_date(event.get("report_date", ""))
-    if event_date is None:
-        return event.get("report_url", "")
-
-    year = event_date.strftime("%Y")
-    ymd = event_date.strftime("%Y%m%d")
-    return f"https://www.nrc.gov/reading-rm/doc-collections/event-status/event/{year}/{ymd}en"
-
-
-def keyword_match(event: dict, keywords: str) -> bool:
-    if not keywords.strip():
-        return True
-
-    haystack = build_search_text(event)
-    terms = parse_terms(keywords)
-    return all(term in haystack for term in terms)
-
-
-def exclude_match(event: dict, exclude_keywords: str) -> bool:
-    if not exclude_keywords.strip():
-        return False
-
-    haystack = build_search_text(event)
-    terms = parse_terms(exclude_keywords)
-    return any(term in haystack for term in terms)
-
-
-def date_in_range(event: dict, start_date, end_date) -> bool:
-    if start_date is None and end_date is None:
-        return True
-
-    event_date = parse_report_date(event.get("report_date", ""))
-    if event_date is None:
-        return False
-
-    if start_date is not None and event_date < start_date:
-        return False
-
-    if end_date is not None and event_date > end_date:
-        return False
-
-    return True
-
-
-def clean_event_text(text: str) -> str:
-    if not text:
-        return ""
-
-    text = text.replace("<br><br>", "\n\n")
-    text = text.replace("<br />", "\n")
-    text = text.replace("<br/>", "\n")
-    text = text.replace("<br>", "\n")
-    text = html.unescape(text)
-
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-
-    return text.strip()
-
-
-def display_title(event: dict) -> str:
-    text = clean_event_text(event.get("event_text", ""))
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-
-    for line in lines[:8]:
-        if len(line) <= 140:
-            return line
-
-    return str(event.get("title", "Event")).strip() or "Event"
-
-
-def make_keyword_snippet(text: str, keywords: str, radius: int = 120) -> str:
-    text = clean_event_text(text)
-    flat = re.sub(r"\s+", " ", text).strip()
-
-    if not flat:
-        return ""
-
-    include_terms = parse_terms(keywords)
-
-    match_start = None
-    match_end = None
-
-    for term in include_terms:
-        match = re.search(re.escape(term), flat, flags=re.IGNORECASE)
-        if match:
-            match_start = match.start()
-            match_end = match.end()
-            break
-
-    if match_start is None:
-        if len(flat) <= radius * 2:
-            return flat
-        return flat[: radius * 2].rstrip() + "..."
-
-    start = max(0, match_start - radius)
-    end = min(len(flat), match_end + radius)
-
-    snippet = flat[start:end]
-
-    if start > 0:
-        snippet = "..." + snippet
-    if end < len(flat):
-        snippet = snippet + "..."
-
-    return snippet
-
-
-def parse_last_updated() -> datetime | None:
-    if not LAST_UPDATED_FILE.exists():
-        return None
-
-    try:
-        text = LAST_UPDATED_FILE.read_text(encoding="utf-8").strip()
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return None
-
-
-def get_last_updated_string() -> str:
-    last_updated = parse_last_updated()
-    if last_updated is None:
-        return "Never"
-    return last_updated.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def needs_update() -> bool:
-    last_updated = parse_last_updated()
-    if last_updated is None:
-        return True
-    return datetime.now() - last_updated > UPDATE_INTERVAL
-
-
-def is_update_in_progress() -> bool:
-    return UPDATE_LOCK_FILE.exists()
-
-
-def maybe_update_events() -> None:
-    """
-    If data is older than UPDATE_INTERVAL, run build_events.py.
-    Uses a lock file so overlapping requests do not launch multiple updates.
-    """
-    if not needs_update():
-        return
-
-    if is_update_in_progress():
-        return
-
-    UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        UPDATE_LOCK_FILE.write_text(
-            f"started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-            encoding="utf-8",
-        )
-
-        if not needs_update():
-            return
-
-        print("Event data is stale. Running incremental update...")
-
-        result = subprocess.run(
-            ["python3", str(BUILD_SCRIPT)],
-            cwd=Path(__file__).parent,
-            capture_output=True,
-            text=True,
-        )
-
-        print(result.stdout)
-        if result.returncode != 0:
-            print("build_events.py failed:")
-            print(result.stderr)
-
-    finally:
-        try:
-            UPDATE_LOCK_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-@app.route("/")
+@app.route('/')
 def index():
-    events = load_events()
+    started=time.perf_counter(); mode=request.args.get('mode','keyword'); q=request.args.get('keywords','').strip()
+    exclude=request.args.get('exclude_keywords','').strip(); start=request.args.get('start_date','').strip() or None; end=request.args.get('end_date','').strip() or None
+    results=[]; error=''; warning=''; ai_stats=None; report=None; classification_status=None; semantic_count=0; classify_limit=0
+    search_depth=request.args.get('depth','standard'); search_depth=search_depth if search_depth in ('standard','comprehensive') else 'standard'
+    if q or exclude or start or end:
+        try:
+            if mode=='ai':
+                if not q: raise ValueError('AI Search requires a research question.')
+                candidate_limit,classify_limit=limits(search_depth)
+                candidates=semantic_candidates(q,start,end,candidate_limit); semantic_count=len(candidates)
+                classified,classification_status=classify(q,candidates,classify_limit,return_status=True)
+                ai_stats=stats(classified); results=[decorate(x,q) for x in classified]; relevant=[x for x in classified if bool(x.get('relevant'))]
+                if classification_status['failed']:
+                    warning=(f"{classification_status['classified']} of {classification_status['requested']} selected candidates were classified. "
+                             f"{classification_status['failed']} could not be classified after retries. Successful results were retained and cached.")
+                if request.args.get('report')=='1': report=generate_report(q,relevant,ai_stats)
+            else: results=[decorate(x,q) for x in search_keyword(q,exclude,start,end)]
+        except Exception as exc: error=str(exc)
+        finally:
+            if mode=='ai': print(f"[AI SEARCH] Request finished in {time.perf_counter()-started:.1f}s.",flush=True)
+    return render_template('index.html',mode=mode,keywords=q,exclude_keywords=exclude,start_date=start or '',end_date=end or '',results=results,
+        last_updated=database_last_updated(),search_depth=search_depth,ai_stats=ai_stats,report=report,error=error,warning=warning,
+        classification_status=classification_status,semantic_count=semantic_count,classify_limit=classify_limit,ai_enabled=bool(os.getenv('OPENAI_API_KEY')))
 
-    keywords = request.args.get("keywords", "").strip()
-    exclude_keywords = request.args.get("exclude_keywords", "").strip()
-    start = request.args.get("start_date", "").strip()
-    end = request.args.get("end_date", "").strip()
+@app.route('/event/<event_number>')
+def event_detail(event_number):
+    event=get_event(event_number)
+    if not event: abort(404)
+    return render_template('event.html',event=event,back=request.referrer or '/')
 
-    start_date = parse_html_date(start)
-    end_date = parse_html_date(end)
-
-    results = []
-    if keywords or exclude_keywords or start_date or end_date:
-        results = [
-            dict(event)
-            for event in events
-            if keyword_match(event, keywords)
-            and not exclude_match(event, exclude_keywords)
-            and date_in_range(event, start_date, end_date)
-        ]
-
-        for event in results:
-            event["display_title"] = display_title(event)
-            event["snippet"] = make_keyword_snippet(event.get("event_text", ""), keywords)
-            event["resolved_report_url"] = build_report_url(event)
-
-        results.sort(
-            key=lambda event: parse_report_date(event.get("report_date", "")) or datetime.min.date(),
-            reverse=True,
-        )
-
-    return render_template(
-        "index.html",
-        keywords=keywords,
-        exclude_keywords=exclude_keywords,
-        start_date=start,
-        end_date=end,
-        results=results,
-        last_updated=get_last_updated_string(),
-    )
-
-
-@app.route("/event/<event_number>")
-def event_detail(event_number: str):
-    events = load_events()
-
-    keywords = request.args.get("keywords", "").strip()
-    exclude_keywords = request.args.get("exclude_keywords", "").strip()
-    start_date = request.args.get("start_date", "").strip()
-    end_date = request.args.get("end_date", "").strip()
-
-    for event in events:
-        if str(event.get("event_number")) == str(event_number):
-            event = dict(event)
-            event["formatted_text"] = clean_event_text(event.get("event_text", ""))
-            event["display_title"] = display_title(event)
-            event["resolved_report_url"] = build_report_url(event)
-
-            return render_template(
-                "event.html",
-                event=event,
-                keywords=keywords,
-                exclude_keywords=exclude_keywords,
-                start_date=start_date,
-                end_date=end_date,
-                last_updated=get_last_updated_string(),
-            )
-
-    abort(404)
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
+if __name__=='__main__': app.run(debug=True)
