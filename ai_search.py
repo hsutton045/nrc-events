@@ -167,10 +167,25 @@ def semantic_candidates(query: str, start=None, end=None, limit: int = 100, prog
     return result
 
 
+def canonical_query(query: str) -> str:
+    """Conservative equivalence rules; do not conflate different failure criteria."""
+    q = re.sub(r"[^a-z0-9 ]+", " ", query.casefold())
+    q = re.sub(r"\s+", " ", q).strip()
+    q = re.sub(r"^(?:please )?(?:find|show|search for|look for|list) (?:me )?", "", q)
+    q = re.sub(r"^(?:all|the) ", "", q)
+    q = re.sub(r"\bmain coolant pumps?\b", "reactor coolant pump", q)
+    q = re.sub(r"\brcps?\b", "reactor coolant pump", q)
+    q = re.sub(r"\bemergency diesel generators?\b", "emergency diesel generator", q)
+    q = re.sub(r"\bedgs?\b", "emergency diesel generator", q)
+    q = re.sub(r"\bpumps\b", "pump", q)
+    q = re.sub(r"\bfailures\b", "failure", q)
+    return re.sub(r"\s+", " ", q).strip()
+
+
 def _cache_key(query: str) -> str:
     # Keep the same cache-key algorithm as the first release so existing
     # classifications (including the user's first 42) remain reusable.
-    return hashlib.sha256((AI_MODEL + "|" + query.strip().lower()).encode()).hexdigest()
+    return hashlib.sha256((AI_MODEL + "|" + canonical_query(query)).encode()).hexdigest()
 
 
 def _extract_json(text: str):
@@ -329,6 +344,11 @@ def classify(query: str, events: list[dict], max_events: int = 80, return_status
     selected = events[:max_events]
     cache_key = _cache_key(query)
     cached = {}
+    # Migrate existing exact-query cache rows on demand; do not erase historical data.
+    legacy_keys = {hashlib.sha256((AI_MODEL + "|" + candidate.strip().lower()).encode()).hexdigest()
+                   for candidate in (query, canonical_query(query),
+                       "reactor coolant pump failures" if canonical_query(query) == "reactor coolant pump failure" else query,
+                       "Emergency Diesel Generator Failures" if canonical_query(query) == "emergency diesel generator failure" else query)}
 
     with connect() as db:
         for event in selected:
@@ -336,6 +356,11 @@ def classify(query: str, events: list[dict], max_events: int = 80, return_status
                 "SELECT * FROM ai_classifications WHERE cache_key=? AND event_number=?",
                 (cache_key, event["event_number"]),
             ).fetchone()
+            if not row:
+                for legacy_key in legacy_keys:
+                    row = db.execute("SELECT * FROM ai_classifications WHERE cache_key=? AND event_number=?",
+                                     (legacy_key, event["event_number"])).fetchone()
+                    if row: break
             if row:
                 cached[str(event["event_number"])] = dict(row)
 
@@ -353,7 +378,7 @@ def classify(query: str, events: list[dict], max_events: int = 80, return_status
             f"of up to {CLASSIFY_BATCH_SIZE}, using {workers} worker(s)...")
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_classify_with_fallback, query, batch, f"Batch {index}/{len(batches)}"): (index, batch)
+                executor.submit(_classify_with_fallback, canonical_query(query), batch, f"Batch {index}/{len(batches)}"): (index, batch)
                 for index, batch in enumerate(batches, start=1)
             }
             completed = 0
@@ -435,27 +460,61 @@ def stats(items: list[dict]) -> dict:
     }
 
 
-def generate_report(query: str, relevant: list[dict], statistics: dict) -> str:
-    log(f"[AI REPORT] Generating report from {len(relevant)} relevant event(s)...")
+def exposure_statistics(relevant: list[dict]) -> dict:
+    """Optional denominators from an externally maintained CSV. No guessed exposure."""
+    import csv
+    path = os.getenv("NRC_EXPOSURE_CSV", "").strip()
+    if not path or not os.path.isfile(path):
+        return {"status": "unavailable", "note": "No verified exposure dataset configured. Raw report counts are not failure rates."}
+    rows = []
+    with open(path, newline="", encoding="utf-8-sig") as stream:
+        for row in csv.DictReader(stream):
+            label = (row.get("component_type") or "").strip()
+            try:
+                exposure = float(row.get("component_years") or 0)
+            except ValueError:
+                continue
+            if label and exposure > 0:
+                rows.append((label, exposure))
+    denominators = {}
+    for label, value in rows:
+        denominators[label.casefold()] = denominators.get(label.casefold(), 0) + value
+    counts = Counter((x.get("subcomponent") or x.get("component") or "").strip().casefold() for x in relevant)
+    rates = []
+    for name, denominator in sorted(denominators.items()):
+        numerator = counts.get(name, 0)
+        rates.append({"component_type": name, "reported_events": numerator,
+                      "component_years": denominator,
+                      "reported_events_per_100_component_years": round(numerator / denominator * 100, 4)})
+    return {"status": "available", "rates": rates,
+            "warning": "Descriptive reported-event frequencies only. Component labels must match the exposure file, and NRC reporting coverage must be assessed. Zero matches may reflect inconsistent taxonomy."}
+
+
+def generate_report(query: str, relevant: list[dict], statistics: dict, reliability_parameters=None) -> str:
+    log(f"[AI REPORT] Generating concise report from {len(relevant)} relevant event(s)...")
     started = time.perf_counter()
-    compact = [
-        {
-            key: event.get(key)
-            for key in (
-                "event_number", "report_date", "facility", "state", "component",
-                "failure_mode", "failure_cause", "plant_response", "reactor_trip", "evidence",
-            )
-        }
-        for event in relevant
-    ]
-    prompt = f"""Write a concise research analysis of NRC Event Notification results for: {query}.
-The audience is developing nuclear-plant digital twins, agent-based models, and/or Petri-net dependability models. Use ONLY the supplied classified results and deterministic statistics. Do not invent failure rates, probabilities, exposure hours, or population-level reliability claims. Clearly distinguish counts within this retrieved NRC event set from component failure probability. Discuss recurring failure modes, causes, plant responses, possible state transitions/causal chains, modeling implications, and limitations. Cite event numbers inline as evidence.
-
-STATISTICS:
-{json.dumps(statistics)}
-
-EVENTS:
-{json.dumps(compact)}"""
+    compact = [{key: event.get(key) for key in
+                ("event_number", "facility", "component", "subcomponent", "failure_mode",
+                 "failure_cause", "reactor_trip", "evidence")}
+               for event in relevant[:250]]
+    exposure = exposure_statistics(relevant)
+    reliability_parameters = reliability_parameters or []
+    prompt = f"""Write a brief, evidence-grounded technical analysis for: {query}.
+Use ONLY the supplied statistics and events. Maximum 220 words total. Structure:
+1. Key findings (2-3 sentences with counts).
+2. Notable failure patterns (2-3 concise bullets with NRC event numbers).
+3. Exposure normalization (1-2 sentences). If exposure.status is unavailable, explicitly say
+   normalization cannot be calculated without installed-base or operating-time denominators.
+4. Limitations (1 sentence): these are retrieved NRC reports, not an exhaustive failure population.
+Do not invent failure rates, plant counts, denominators, probabilities, or confidence intervals.
+Never treat classification confidence as a reliability probability.
+Published reliability parameters, if supplied, are a separate dataset. State their units and source; do not conflate per-demand probabilities with per-hour failure rates, and do not imply parameter applicability to the event set without population/failure-mode verification.
+If exposure rates are provided, identify them as reported events per component-years, NOT true failure rates.
+Only cite event numbers that appear in EVENTS. Do not imply all records were reviewed.
+STATISTICS: {json.dumps(statistics)}
+EXPOSURE: {json.dumps(exposure)}
+REFERENCE RELIABILITY PARAMETERS (not inferred from event reports): {json.dumps(reliability_parameters)}
+EVENTS (up to 250 for context): {json.dumps(compact)}"""
     result = client().responses.create(model=AI_MODEL, input=prompt).output_text
     log(f"[AI REPORT] Complete in {time.perf_counter() - started:.1f}s.")
     return result

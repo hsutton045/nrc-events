@@ -1,11 +1,24 @@
 from __future__ import annotations
 import os, re, time, threading, uuid
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, Response
 from database import init_db, get_event, database_last_updated, search_keyword
 from ai_search import semantic_candidates, classify, stats, generate_report
+from reliability import SOURCES
+from reliability_store import init as init_reliability, search as search_reliability, export_rows
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024
+app.secret_key = os.getenv("NRC_SESSION_SECRET") or os.urandom(32)
+from review_interface import review_bp
+app.register_blueprint(review_bp)
+from reliability_browser import bp as reliability_bp
+app.register_blueprint(reliability_bp)
+from anylogic_export import bp as anylogic_bp
+app.register_blueprint(anylogic_bp)
+from event_reliability import bp as event_reliability_bp, match_event
+app.register_blueprint(event_reliability_bp)
 init_db()
+init_reliability()
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -79,8 +92,12 @@ def ai_search_status(job_id):
 
 @app.route('/')
 def index():
-    started=time.perf_counter(); mode=request.args.get('mode','keyword'); q=request.args.get('keywords','').strip()
+    started=time.perf_counter(); mode='ai'; q=request.args.get('keywords','').strip()
     exclude=request.args.get('exclude_keywords','').strip(); start=request.args.get('start_date','').strip() or None; end=request.args.get('end_date','').strip() or None
+    # Query-text retrieval is contextual only, not event-to-parameter matching.
+    matched_parameters=search_reliability(q) if q else []
+    event_parameter_matches=[]
+    parameter_warning=None
     results=[]; error=''; warning=''; ai_stats=None; report=None; classification_status=None; semantic_count=0; classify_limit=0
     search_depth=request.args.get('depth','standard'); search_depth=search_depth if search_depth in ('standard','comprehensive') else 'standard'
     if q or exclude or start or end:
@@ -91,17 +108,35 @@ def index():
                 candidates=semantic_candidates(q,start,end,candidate_limit); semantic_count=len(candidates)
                 classified,classification_status=classify(q,candidates,classify_limit,return_status=True)
                 ai_stats=stats(classified); results=[decorate(x,q) for x in classified]; relevant=[x for x in classified if bool(x.get('relevant'))]
+                # Only attach explicit component + mode matches to classified relevant events.
+                event_parameter_matches=[{'event_number':e.get('event_number'), 'component':e.get('component'),
+                                          'failure_mode':e.get('failure_mode'), **match_event(e.get('component'),e.get('failure_mode'))}
+                                         for e in relevant]
+                # Preserve existing research report behavior; never substitute matches for exposure-normalized rates.
                 if classification_status['failed']:
                     warning=(f"{classification_status['classified']} of {classification_status['requested']} selected candidates were classified. "
                              f"{classification_status['failed']} could not be classified after retries. Successful results were retained and cached.")
-                if request.args.get('report')=='1': report=generate_report(q,relevant,ai_stats)
-            else: results=[decorate(x,q) for x in search_keyword(q,exclude,start,end)]
+                if request.args.get('report')=='1': report=generate_report(q,relevant,ai_stats, matched_parameters)
+
         except Exception as exc: error=str(exc)
         finally:
             if mode=='ai': print(f"[AI SEARCH] Request finished in {time.perf_counter()-started:.1f}s.",flush=True)
     return render_template('index.html',mode=mode,keywords=q,exclude_keywords=exclude,start_date=start or '',end_date=end or '',results=results,
         last_updated=database_last_updated(),search_depth=search_depth,ai_stats=ai_stats,report=report,error=error,warning=warning,
-        classification_status=classification_status,semantic_count=semantic_count,classify_limit=classify_limit,ai_enabled=bool(os.getenv('OPENAI_API_KEY')))
+        classification_status=classification_status,semantic_count=semantic_count,classify_limit=classify_limit,
+        reliability_sources=SOURCES,reliability_parameters=matched_parameters,event_parameter_matches=event_parameter_matches,parameter_warning=parameter_warning,ai_enabled=bool(os.getenv('OPENAI_API_KEY')))
+
+@app.get('/api/reliability/export')
+def reliability_export():
+    import csv, io, json
+    q=request.args.get('q','').strip()
+    if not q: return jsonify({'error':'A research query is required.'}),400
+    rows=export_rows(search_reliability(q,limit=10000))
+    if request.args.get('format')=='csv':
+        output=io.StringIO(); fields=list(rows[0]) if rows else ['component','failure_mode','value','unit','distribution','source_url']
+        writer=csv.DictWriter(output,fieldnames=fields);writer.writeheader();writer.writerows(rows)
+        return Response(output.getvalue(),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename="reliability_parameters.csv"'})
+    return jsonify({'query':q,'parameters':rows,'warning':'Verify parameter applicability, review status, units and uncertainty before simulation.'})
 
 @app.route('/event/<event_number>')
 def event_detail(event_number):
