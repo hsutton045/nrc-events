@@ -122,18 +122,63 @@ def upload_study():
     token=request.form.get('csrf','')
     if not secrets.compare_digest(token,str(session.get('csrf',''))):abort(403)
     f=request.files.get('study')
-    if not f or not f.filename.lower().endswith('.pdf'):return jsonify(error='Select a PDF file'),400
+    if not f or not f.filename.lower().endswith(('.pdf','.xlsx')):return jsonify(error='Select a PDF or XLSX file'),400
     # Upload limit is also enforced at the Flask app level.
-    with tempfile.NamedTemporaryFile(suffix='.pdf',delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=('.xlsx' if f.filename.lower().endswith('.xlsx') else '.pdf'),delete=False) as tmp:
         path=tmp.name
         while True:
             chunk=f.stream.read(65536)
             if not chunk:break
             tmp.write(chunk)
     try:
+        if path.endswith('.xlsx'):
+            from workbook_reliability_import import ingest_workbook
+            result=ingest_workbook(path)
+            return __import__('flask').redirect('/review/workbook?status=needs_review')
         from bulk_reliability_import import ingest_bulk
         result=ingest_bulk(path)
         return __import__('flask').redirect('/review?status=all&imported='+str(result['automatically_validated']))
     except Exception as exc:
         return jsonify(error=str(exc)),400
     finally:Path(path).unlink(missing_ok=True)
+
+@review_bp.get('/review/workbook')
+def workbook_queue():
+    guard()
+    from workbook_reliability_import import get_records
+    status=request.args.get('status','needs_review')
+    if status not in ('needs_review','validated','approved','rejected','all'):status='needs_review'
+    rows=get_records(None if status=='all' else status,limit=10000)
+    return render_template('workbook_review.html',rows=rows,status=status,csrf=session.get('csrf'))
+
+@review_bp.post('/api/review/workbook/<record_id>')
+def workbook_decision(record_id):
+    guard();csrf_guard()
+    from workbook_reliability_import import init
+    init();body=request.get_json(silent=True) or {}
+    action=body.get('action')
+    if action not in ('approve','reject'):return jsonify(error='Invalid action'),400
+    if action=='approve' and body.get('source_confirmed') is not True:
+        return jsonify(error='Explicit source verification required'),400
+    with connect() as c:
+        row=c.execute('SELECT review_status FROM workbook_reliability_records WHERE id=?',(record_id,)).fetchone()
+        if not row:return jsonify(error='Not found'),404
+        c.execute('UPDATE workbook_reliability_records SET review_status=? WHERE id=?',
+                  ('approved' if action=='approve' else 'rejected',record_id))
+    return jsonify(ok=True)
+
+@review_bp.get('/api/review/workbook/export')
+def workbook_export():
+    guard()
+    from workbook_reliability_import import get_records
+    status=request.args.get('status','approved')
+    if status not in ('approved','validated','needs_review','all'):return jsonify(error='Invalid status'),400
+    rows=get_records(None if status=='all' else status,limit=10000)
+    for r in rows:
+        r['warnings']=json.loads(r.pop('warnings_json'))
+        r['raw']=json.loads(r.pop('raw_json'))
+        r['distribution_parameters']=({'alpha':r['alpha'],'beta':r['beta']} if r['distribution']=='Beta' else
+             {'shape':r['shape'],'scale':r['scale'],'parameterization':'shape-scale'} if r['distribution']=='Gamma' else
+             {'note':'Normal distribution parameters require separate review'})
+        r['modeling_warning']='Epistemic uncertainty is not a time-to-failure distribution. Check unit and applicability.'
+    return jsonify(schema_version='workbook-v1',parameters=rows)
