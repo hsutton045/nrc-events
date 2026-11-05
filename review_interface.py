@@ -77,7 +77,9 @@ def save_row(row_id):
         if action=='reject':
             c.execute("UPDATE study_extraction_rows SET review_status='rejected' WHERE id=?",(row_id,))
             return jsonify(ok=True,status='rejected')
-        payload={k:str(data.get(k,'') or '').strip() for k in FIELDS}
+        if data.get('source_confirmed') is not True:
+            return jsonify(error='Source verification confirmation is required for approval'),400
+        payload={k:str(data.get(k,'') if data.get(k,'') is not None else '').strip() for k in FIELDS}
         payload['source_url']=row['document_url']
         payload['title']=payload['title'] or row['title']
         payload['study_id']=payload['study_id'] or row['sha256'][:24]
