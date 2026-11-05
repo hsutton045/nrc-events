@@ -5,12 +5,23 @@ through the existing validated reliability_store ingestion path.
 """
 import csv, io, json, os, secrets, tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 from flask import Blueprint, abort, jsonify, render_template, request, session
 from database import connect
 from study_pipeline import init as init_studies
 from reliability_store import init as init_reliability, ingest_csv, FIELDS
 
 review_bp=Blueprint('review',__name__)
+
+# A local-upload:// identifier identifies the archived document, not its public source.
+def verified_source_url(row):
+    for field in ('listing_url', 'document_url'):
+        url = str(row[field] or '').strip()
+        parts = urlsplit(url)
+        if parts.scheme == 'https' and parts.hostname:
+            return url
+    return None
+
 
 def authorized():
     token=os.getenv('NRC_REVIEW_TOKEN','')
@@ -59,10 +70,11 @@ def dashboard():
 def get_row(row_id):
     guard();init_studies()
     with connect() as c:
-        r=c.execute('''SELECT r.*,d.title,d.sha256 FROM study_extraction_rows r
+        r=c.execute('''SELECT r.*,d.title,d.sha256,d.listing_url FROM study_extraction_rows r
                        JOIN study_documents d ON d.url=r.document_url WHERE r.id=?''',(row_id,)).fetchone()
     if not r:abort(404)
     result=dict(r);result['cells']=json.loads(result['raw_cells_json'])
+    result['source_url']=verified_source_url(result)
     return jsonify(result)
 
 @review_bp.post('/api/review/row/<row_id>')
@@ -71,7 +83,7 @@ def save_row(row_id):
     action=data.get('action')
     if action not in ('approve','reject'):return jsonify(error='Invalid action'),400
     with connect() as c:
-        row=c.execute('''SELECT r.*,d.title,d.sha256 FROM study_extraction_rows r
+        row=c.execute('''SELECT r.*,d.title,d.sha256,d.listing_url FROM study_extraction_rows r
                          JOIN study_documents d ON d.url=r.document_url WHERE r.id=?''',(row_id,)).fetchone()
         if not row:return jsonify(error='Row not found'),404
         if action=='reject':
@@ -80,7 +92,10 @@ def save_row(row_id):
         if data.get('source_confirmed') is not True:
             return jsonify(error='Source verification confirmation is required for approval'),400
         payload={k:str(data.get(k,'') if data.get(k,'') is not None else '').strip() for k in FIELDS}
-        payload['source_url']=row['document_url']
+        source_url=verified_source_url(row)
+        if not source_url:
+            return jsonify(error='No HTTPS publication URL recorded for this document. Update the study document source metadata before approval.'),400
+        payload['source_url']=source_url
         payload['title']=payload['title'] or row['title']
         payload['study_id']=payload['study_id'] or row['sha256'][:24]
         payload['review_status']='verified'

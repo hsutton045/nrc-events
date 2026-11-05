@@ -16,6 +16,7 @@ async function openRow(id) {
   document.getElementById('source').textContent = [r.title, r.sheet_or_page, 'row ' + r.row_number].join(' · ');
   document.getElementById('cells').textContent = Array.isArray(raw) ? raw.join(' | ') : typeof raw === 'string' ? raw : JSON.stringify(raw ?? {}, null, 2);
   document.getElementById('verifyForm').reset();
+  document.getElementById('source_confirmed').checked = false;
   document.getElementById('error').textContent = '';
   document.getElementById('warnings').textContent = '';
   for (const field of formFields) setField(field, cells[field]);
@@ -41,6 +42,17 @@ async function openRow(id) {
   }
   const issues = Array.isArray(cells.issues) ? cells.issues : [];
   document.getElementById('warnings').textContent = issues.length ? 'Requires source review: ' + issues.join('; ') : 'No extraction warnings recorded. Source verification is still required.';
+  if (r.source_url) {
+    const source = document.getElementById('source');
+    const link = document.createElement('a');
+    link.href = r.source_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open publication';
+    source.append(' · ', link);
+  } else {
+    document.getElementById('warnings').textContent += ' | Missing HTTPS source URL; approval will be blocked until document metadata is corrected.';
+  }
   const notes = [];
   if (cells.pooling_group) notes.push('Pooling group: ' + cells.pooling_group);
   if (cells.heading) notes.push('Source heading: ' + cells.heading);
